@@ -26,7 +26,6 @@ def render_page(content, show_sidebar=True):
         <h2>Task Tracker</h2>
         <a href="/dashboard">Dashboard</a>
         <a href="/upload-page">Upload</a>
-        <a href="/settings">Settings</a>
         <a href="/logout">Logout</a>
     </div>
     """ if show_sidebar else ""
@@ -75,29 +74,11 @@ def render_page(content, show_sidebar=True):
                 border:1px solid #334155;
             }}
 
-            .stats {{
-                display:flex; gap:15px; margin-bottom:20px;
-            }}
+            table {{ width:100%; border-collapse:collapse; }}
 
-            .stat {{
-                flex:1;
-                background:#1e293b;
-                padding:20px;
-                border-radius:10px;
-            }}
+            td, th {{ padding:10px; border-top:1px solid #334155; }}
 
-            table {{
-                width:100%; border-collapse:collapse;
-            }}
-
-            td, th {{
-                padding:10px;
-                border-top:1px solid #334155;
-            }}
-
-            tr:hover {{ background:#1e293b; }}
-
-            input, select {{
+            input {{
                 padding:10px;
                 width:100%;
                 margin:6px 0 12px;
@@ -147,6 +128,7 @@ def home():
         </div>
     """, False)
 
+
 @app.post("/login")
 def login(email: str = Form(...), password: str = Form(...), db: Session = Depends(get_db)):
     user = db.query(models.User).filter(models.User.email == email).first()
@@ -178,16 +160,21 @@ def signup_page():
         </div>
     """, False)
 
+
 @app.post("/signup")
 def signup(email: str = Form(...), password: str = Form(...), db: Session = Depends(get_db)):
+    existing = db.query(models.User).filter(models.User.email == email).first()
+    if existing:
+        return HTMLResponse("User already exists")
+
     user = models.User(
         email=email,
-        password=hash_password(password),
-        reminder_days=3,
-        email_frequency="daily"
+        password=hash_password(password)
     )
+
     db.add(user)
     db.commit()
+
     return RedirectResponse("/", status_code=303)
 
 # ---------------- DASHBOARD ----------------
@@ -204,7 +191,7 @@ def dashboard(request: Request, db: Session = Depends(get_db)):
     tasks = sorted(tasks, key=lambda t: t.due_date)
 
     if not tasks:
-        rows = "<tr><td colspan='3'>No tasks yet</td></tr>"
+        rows = "<tr><td colspan='2'>No tasks yet</td></tr>"
     else:
         rows = ""
         for t in tasks:
@@ -237,6 +224,7 @@ def add_task_page():
         </div>
     """)
 
+
 @app.post("/add-task")
 def add_task(request: Request, task_name: str = Form(...), due_date: str = Form(...), db: Session = Depends(get_db)):
     email = request.cookies.get("user_email")
@@ -252,37 +240,37 @@ def add_task(request: Request, task_name: str = Form(...), due_date: str = Form(
 
     return RedirectResponse("/dashboard?msg=added", status_code=303)
 
-# ---------------- SETTINGS ----------------
-@app.get("/settings", response_class=HTMLResponse)
-def settings_page(request: Request, db: Session = Depends(get_db)):
-    email = request.cookies.get("user_email")
-    user = db.query(models.User).filter(models.User.email == email).first()
-
-    return render_page(f"""
+# ---------------- UPLOAD ----------------
+@app.get("/upload-page", response_class=HTMLResponse)
+def upload_page():
+    return render_page("""
         <div class="card">
-            <h2>Settings</h2>
-            <form method="post" action="/settings">
-                <label>Reminder Days</label>
-                <input name="days" value="{user.reminder_days}">
-
-                <label>Email Frequency</label>
-                <select name="freq">
-                    <option {"selected" if user.email_frequency=="daily" else ""}>daily</option>
-                    <option {"selected" if user.email_frequency=="weekly" else ""}>weekly</option>
-                </select>
-
-                <button>Save</button>
+            <h2>Upload CSV</h2>
+            <form action="/upload" method="post" enctype="multipart/form-data">
+                <input type="file" name="file">
+                <button>Upload</button>
             </form>
         </div>
     """)
 
-@app.post("/settings")
-def save_settings(request: Request, days: int = Form(...), freq: str = Form(...), db: Session = Depends(get_db)):
-    email = request.cookies.get("user_email")
-    user = db.query(models.User).filter(models.User.email == email).first()
 
-    user.reminder_days = days
-    user.email_frequency = freq
+@app.post("/upload")
+def upload(file: UploadFile = File(...), request: Request = None, db: Session = Depends(get_db)):
+    email = request.cookies.get("user_email")
+
+    df = pd.read_csv(file.file)
+
+    for _, row in df.iterrows():
+        try:
+            task = models.Task(
+                task_name=str(row[0]),
+                due_date=pd.to_datetime(row[1]),
+                user_email=email
+            )
+            db.add(task)
+        except:
+            continue
+
     db.commit()
 
     return RedirectResponse("/dashboard", status_code=303)
