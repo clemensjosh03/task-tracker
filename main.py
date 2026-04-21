@@ -1,6 +1,7 @@
 from fastapi import FastAPI, Form, UploadFile, File, Depends, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 from sqlalchemy.orm import Session
+from sqlalchemy import text
 from database import SessionLocal, engine
 import models
 from auth import hash_password, verify_password
@@ -8,6 +9,17 @@ import pandas as pd
 from datetime import datetime
 
 models.Base.metadata.create_all(bind=engine)
+
+# ✅ SAFE DB COLUMN CREATION
+def ensure_columns():
+    with engine.connect() as conn:
+        conn.execute(text("ALTER TABLE users ADD COLUMN IF NOT EXISTS reminder_days INTEGER DEFAULT 3;"))
+        conn.execute(text("ALTER TABLE users ADD COLUMN IF NOT EXISTS email_frequency VARCHAR DEFAULT 'daily';"))
+        conn.execute(text("ALTER TABLE users ADD COLUMN IF NOT EXISTS alert_days INTEGER DEFAULT 1;"))
+        conn.execute(text("ALTER TABLE users ADD COLUMN IF NOT EXISTS notification_interval INTEGER DEFAULT 24;"))
+        conn.execute(text("ALTER TABLE users ADD COLUMN IF NOT EXISTS last_sent TIMESTAMP;"))
+
+ensure_columns()
 
 app = FastAPI()
 
@@ -26,6 +38,7 @@ def render_page(content, show_sidebar=True):
         <h2>Task Tracker</h2>
         <a href="/dashboard">Dashboard</a>
         <a href="/upload-page">Upload</a>
+        <a href="/settings">Settings</a>
         <a href="/logout">Logout</a>
     </div>
     """ if show_sidebar else ""
@@ -78,7 +91,7 @@ def render_page(content, show_sidebar=True):
 
             td, th {{ padding:10px; border-top:1px solid #334155; }}
 
-            input {{
+            input, select {{
                 padding:10px;
                 width:100%;
                 margin:6px 0 12px;
@@ -101,6 +114,9 @@ def render_page(content, show_sidebar=True):
                 border-radius:6px;
                 margin-bottom:15px;
             }}
+
+            .overdue {{ color:#dc2626; }}
+            .upcoming {{ color:#16a34a; }}
         </style>
     </head>
     <body>
@@ -127,7 +143,6 @@ def home():
             <p><a href="/signup-page">Sign up</a></p>
         </div>
     """, False)
-
 
 @app.post("/login")
 def login(email: str = Form(...), password: str = Form(...), db: Session = Depends(get_db)):
@@ -160,7 +175,6 @@ def signup_page():
         </div>
     """, False)
 
-
 @app.post("/signup")
 def signup(email: str = Form(...), password: str = Form(...), db: Session = Depends(get_db)):
     existing = db.query(models.User).filter(models.User.email == email).first()
@@ -190,12 +204,28 @@ def dashboard(request: Request, db: Session = Depends(get_db)):
     tasks = db.query(models.Task).filter(models.Task.user_email == email).all()
     tasks = sorted(tasks, key=lambda t: t.due_date)
 
+    now = datetime.now()
+
     if not tasks:
-        rows = "<tr><td colspan='2'>No tasks yet</td></tr>"
+        rows = "<tr><td colspan='4'>No tasks yet</td></tr>"
     else:
         rows = ""
         for t in tasks:
-            rows += f"<tr><td>{t.task_name}</td><td>{t.due_date.date()}</td></tr>"
+            if t.due_date < now:
+                status = "Overdue"
+                cls = "overdue"
+            else:
+                status = "Upcoming"
+                cls = "upcoming"
+
+            rows += f"""
+            <tr>
+                <td>{t.task_name}</td>
+                <td>{t.due_date.date()}</td>
+                <td class="{cls}">{status}</td>
+                <td><a href="/delete-task/{t.id}">Delete</a></td>
+            </tr>
+            """
 
     return render_page(f"""
         {alert}
@@ -204,7 +234,7 @@ def dashboard(request: Request, db: Session = Depends(get_db)):
             <h3>Tasks</h3>
             <a href="/add-task"><button>Add Task</button></a>
             <table>
-                <tr><th>Task</th><th>Due</th></tr>
+                <tr><th>Task</th><th>Due</th><th>Status</th><th>Action</th></tr>
                 {rows}
             </table>
         </div>
@@ -224,7 +254,6 @@ def add_task_page():
         </div>
     """)
 
-
 @app.post("/add-task")
 def add_task(request: Request, task_name: str = Form(...), due_date: str = Form(...), db: Session = Depends(get_db)):
     email = request.cookies.get("user_email")
@@ -240,6 +269,68 @@ def add_task(request: Request, task_name: str = Form(...), due_date: str = Form(
 
     return RedirectResponse("/dashboard?msg=added", status_code=303)
 
+# ---------------- DELETE TASK ----------------
+@app.get("/delete-task/{task_id}")
+def delete_task(task_id: int, db: Session = Depends(get_db)):
+    task = db.query(models.Task).filter(models.Task.id == task_id).first()
+    if task:
+        db.delete(task)
+        db.commit()
+
+    return RedirectResponse("/dashboard", status_code=303)
+
+# ---------------- SETTINGS ----------------
+@app.get("/settings", response_class=HTMLResponse)
+def settings_page(request: Request, db: Session = Depends(get_db)):
+    email = request.cookies.get("user_email")
+    user = db.query(models.User).filter(models.User.email == email).first()
+
+    return render_page(f"""
+        <div class="card">
+            <h2>Settings</h2>
+            <form method="post" action="/settings">
+
+                <label>Reminder Days</label>
+                <input name="reminder_days" value="{user.reminder_days or 3}">
+
+                <label>Email Frequency</label>
+                <select name="email_frequency">
+                    <option {"selected" if user.email_frequency=="daily" else ""}>daily</option>
+                    <option {"selected" if user.email_frequency=="weekly" else ""}>weekly</option>
+                </select>
+
+                <label>Alert Days</label>
+                <input name="alert_days" value="{user.alert_days or 1}">
+
+                <label>Notification Interval (hours)</label>
+                <input name="notification_interval" value="{user.notification_interval or 24}">
+
+                <button>Save</button>
+            </form>
+        </div>
+    """)
+
+@app.post("/settings")
+def save_settings(
+    request: Request,
+    reminder_days: int = Form(...),
+    email_frequency: str = Form(...),
+    alert_days: int = Form(...),
+    notification_interval: int = Form(...),
+    db: Session = Depends(get_db)
+):
+    email = request.cookies.get("user_email")
+    user = db.query(models.User).filter(models.User.email == email).first()
+
+    user.reminder_days = reminder_days
+    user.email_frequency = email_frequency
+    user.alert_days = alert_days
+    user.notification_interval = notification_interval
+
+    db.commit()
+
+    return RedirectResponse("/dashboard", status_code=303)
+
 # ---------------- UPLOAD ----------------
 @app.get("/upload-page", response_class=HTMLResponse)
 def upload_page():
@@ -252,7 +343,6 @@ def upload_page():
             </form>
         </div>
     """)
-
 
 @app.post("/upload")
 def upload(file: UploadFile = File(...), request: Request = None, db: Session = Depends(get_db)):
