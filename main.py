@@ -11,6 +11,7 @@ models.Base.metadata.create_all(bind=engine)
 
 app = FastAPI()
 
+# ---------------- DB ----------------
 def get_db():
     db = SessionLocal()
     try:
@@ -18,6 +19,7 @@ def get_db():
     finally:
         db.close()
 
+# ---------------- UI WRAPPER ----------------
 def render_page(content, show_sidebar=True):
     sidebar = """
     <div class="sidebar">
@@ -48,9 +50,8 @@ def render_page(content, show_sidebar=True):
             .badge {{ padding:5px 10px; border-radius:999px; font-size:12px; }}
             .overdue {{ background:#fee2e2; color:#dc2626; }}
             .upcoming {{ background:#dcfce7; color:#16a34a; }}
-            input, select {{ padding:10px; width:100%; margin:6px 0 12px; border:1px solid #ddd; border-radius:6px; }}
+            input {{ padding:10px; width:100%; margin:6px 0 12px; border:1px solid #ddd; border-radius:6px; }}
             button {{ padding:8px 14px; background:#16a34a; color:white; border:none; border-radius:6px; cursor:pointer; }}
-            .actions a {{ margin-right:10px; color:#2563eb; text-decoration:none; }}
         </style>
     </head>
     <body>
@@ -79,6 +80,7 @@ def home():
         </div>
     """, False)
 
+
 @app.post("/login")
 def login(email: str = Form(...), password: str = Form(...), db: Session = Depends(get_db)):
     user = db.query(models.User).filter(models.User.email == email).first()
@@ -88,6 +90,7 @@ def login(email: str = Form(...), password: str = Form(...), db: Session = Depen
     res = RedirectResponse("/dashboard", status_code=303)
     res.set_cookie("user_email", email)
     return res
+
 # ---------------- SIGNUP ----------------
 @app.get("/signup-page", response_class=HTMLResponse)
 def signup_page():
@@ -118,16 +121,18 @@ def signup(email: str = Form(...), password: str = Form(...), db: Session = Depe
     db.commit()
 
     return RedirectResponse("/", status_code=303)
+
 # ---------------- DASHBOARD ----------------
 @app.get("/dashboard", response_class=HTMLResponse)
 def dashboard(request: Request, db: Session = Depends(get_db)):
     email = request.cookies.get("user_email")
-    user = db.query(models.User).filter(models.User.email == email).first()
+
+    if not email:
+        return RedirectResponse("/")
+
     tasks = db.query(models.Task).filter(models.Task.user_email == email).all()
 
     now = datetime.now()
-
-    # ✅ SORTING ADDED HERE
     tasks = sorted(tasks, key=lambda t: t.due_date)
 
     total = len(tasks)
@@ -161,3 +166,68 @@ def dashboard(request: Request, db: Session = Depends(get_db)):
             </table>
         </div>
     """)
+
+# ---------------- ADD TASK ----------------
+@app.get("/add-task", response_class=HTMLResponse)
+def add_task_page():
+    return render_page("""
+        <div class="card">
+            <h2>Add Task</h2>
+            <form action="/add-task" method="post">
+                <input name="task_name" placeholder="Task name">
+                <input name="due_date" type="date">
+                <button>Add</button>
+            </form>
+        </div>
+    """)
+
+
+@app.post("/add-task")
+def add_task(request: Request, task_name: str = Form(...), due_date: str = Form(...), db: Session = Depends(get_db)):
+    email = request.cookies.get("user_email")
+
+    task = models.Task(
+        task_name=task_name,
+        due_date=datetime.strptime(due_date, "%Y-%m-%d"),
+        user_email=email
+    )
+
+    db.add(task)
+    db.commit()
+
+    return RedirectResponse("/dashboard", status_code=303)
+
+# ---------------- UPLOAD ----------------
+@app.get("/upload-page", response_class=HTMLResponse)
+def upload_page():
+    return render_page("""
+        <div class="card">
+            <h2>Upload CSV</h2>
+            <form action="/upload" method="post" enctype="multipart/form-data">
+                <input type="file" name="file">
+                <button>Upload</button>
+            </form>
+        </div>
+    """)
+
+
+@app.post("/upload")
+def upload(file: UploadFile = File(...), request: Request = None, db: Session = Depends(get_db)):
+    email = request.cookies.get("user_email")
+
+    df = pd.read_csv(file.file)
+
+    for _, row in df.iterrows():
+        try:
+            task = models.Task(
+                task_name=str(row[0]),
+                due_date=pd.to_datetime(row[1]),
+                user_email=email
+            )
+            db.add(task)
+        except:
+            continue
+
+    db.commit()
+
+    return RedirectResponse("/dashboard", status_code=303)
