@@ -88,7 +88,36 @@ def login(email: str = Form(...), password: str = Form(...), db: Session = Depen
     res = RedirectResponse("/dashboard", status_code=303)
     res.set_cookie("user_email", email)
     return res
+# ---------------- SIGNUP ----------------
+@app.get("/signup-page", response_class=HTMLResponse)
+def signup_page():
+    return render_page("""
+        <div class="card">
+            <h2>Sign Up</h2>
+            <form action="/signup" method="post">
+                <input name="email" placeholder="Email">
+                <input name="password" type="password" placeholder="Password">
+                <button>Create Account</button>
+            </form>
+            <p><a href="/">Back to login</a></p>
+        </div>
+    """, False)
 
+
+@app.post("/signup")
+def signup(email: str = Form(...), password: str = Form(...), db: Session = Depends(get_db)):
+    existing = db.query(models.User).filter(models.User.email == email).first()
+    if existing:
+        return HTMLResponse("User already exists")
+
+    user = models.User(
+        email=email,
+        password=hash_password(password)
+    )
+    db.add(user)
+    db.commit()
+
+    return RedirectResponse("/", status_code=303)
 # ---------------- DASHBOARD ----------------
 @app.get("/dashboard", response_class=HTMLResponse)
 def dashboard(request: Request, db: Session = Depends(get_db)):
