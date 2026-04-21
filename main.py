@@ -19,14 +19,15 @@ def get_db():
     finally:
         db.close()
 
-# ---------------- UI WRAPPER ----------------
+# ---------------- UI ----------------
 def render_page(content, show_sidebar=True):
     sidebar = """
     <div class="sidebar">
-        <h3>Task Tracker</h3>
+        <h2>Task Tracker</h2>
         <a href="/dashboard">Dashboard</a>
         <a href="/upload-page">Upload</a>
-        <a href="/">Logout</a>
+        <a href="/settings">Settings</a>
+        <a href="/logout">Logout</a>
     </div>
     """ if show_sidebar else ""
 
@@ -35,31 +36,97 @@ def render_page(content, show_sidebar=True):
     <head>
         <title>Task Tracker</title>
         <style>
-            body {{ font-family: Arial; background:#f5f7fb; margin:0; display:flex; }}
-            .sidebar {{ width:220px; background:#111827; color:white; padding:20px; height:100vh; }}
-            .sidebar a {{ display:block; color:#9ca3af; margin:12px 0; text-decoration:none; }}
+            body {{ margin:0; display:flex; font-family:Arial; background:#0f172a; color:#e5e7eb; }}
+
+            .sidebar {{
+                width:220px; background:#111827; padding:20px;
+                height:100vh; position:fixed;
+            }}
+
+            .sidebar a {{
+                display:block; color:#9ca3af; margin:12px 0; text-decoration:none;
+            }}
+
             .sidebar a:hover {{ color:white; }}
-            .main {{ flex:1; padding:40px; display:flex; justify-content:center; }}
-            .container {{ width:100%; max-width:1100px; }}
-            .card {{ background:white; padding:25px; border-radius:12px; margin-bottom:20px; }}
-            .stats {{ display:flex; gap:15px; margin-bottom:20px; }}
-            .stat {{ flex:1; background:white; padding:20px; border-radius:10px; }}
-            table {{ width:100%; border-collapse:collapse; }}
-            td, th {{ padding:10px; border-top:1px solid #eee; }}
-            tr:hover {{ background:#f9fafb; }}
-            .badge {{ padding:5px 10px; border-radius:999px; font-size:12px; }}
-            .overdue {{ background:#fee2e2; color:#dc2626; }}
-            .upcoming {{ background:#dcfce7; color:#16a34a; }}
-            input {{ padding:10px; width:100%; margin:6px 0 12px; border:1px solid #ddd; border-radius:6px; }}
-            button {{ padding:8px 14px; background:#16a34a; color:white; border:none; border-radius:6px; cursor:pointer; }}
+
+            .main {{
+                margin-left:220px;
+                width:100%;
+                padding:80px 40px 40px;
+            }}
+
+            .topbar {{
+                position:fixed;
+                left:220px;
+                right:0;
+                height:60px;
+                background:#111827;
+                display:flex;
+                align-items:center;
+                padding:0 20px;
+                border-bottom:1px solid #334155;
+            }}
+
+            .card {{
+                background:#1e293b;
+                padding:25px;
+                border-radius:12px;
+                margin-bottom:20px;
+                border:1px solid #334155;
+            }}
+
+            .stats {{
+                display:flex; gap:15px; margin-bottom:20px;
+            }}
+
+            .stat {{
+                flex:1;
+                background:#1e293b;
+                padding:20px;
+                border-radius:10px;
+            }}
+
+            table {{
+                width:100%; border-collapse:collapse;
+            }}
+
+            td, th {{
+                padding:10px;
+                border-top:1px solid #334155;
+            }}
+
+            tr:hover {{ background:#1e293b; }}
+
+            input, select {{
+                padding:10px;
+                width:100%;
+                margin:6px 0 12px;
+                border-radius:6px;
+                border:none;
+            }}
+
+            button {{
+                padding:10px 16px;
+                background:#3b82f6;
+                color:white;
+                border:none;
+                border-radius:6px;
+                cursor:pointer;
+            }}
+
+            .success {{
+                background:#16a34a;
+                padding:10px;
+                border-radius:6px;
+                margin-bottom:15px;
+            }}
         </style>
     </head>
     <body>
         {sidebar}
+        <div class="topbar"><h3>Task Tracker</h3></div>
         <div class="main">
-            <div class="container">
-                {content}
-            </div>
+            {content}
         </div>
     </body>
     </html>
@@ -80,7 +147,6 @@ def home():
         </div>
     """, False)
 
-
 @app.post("/login")
 def login(email: str = Form(...), password: str = Form(...), db: Session = Depends(get_db)):
     user = db.query(models.User).filter(models.User.email == email).first()
@@ -89,6 +155,13 @@ def login(email: str = Form(...), password: str = Form(...), db: Session = Depen
 
     res = RedirectResponse("/dashboard", status_code=303)
     res.set_cookie("user_email", email)
+    return res
+
+# ---------------- LOGOUT ----------------
+@app.get("/logout")
+def logout():
+    res = RedirectResponse("/")
+    res.delete_cookie("user_email")
     return res
 
 # ---------------- SIGNUP ----------------
@@ -102,66 +175,49 @@ def signup_page():
                 <input name="password" type="password" placeholder="Password">
                 <button>Create Account</button>
             </form>
-            <p><a href="/">Back to login</a></p>
         </div>
     """, False)
 
-
 @app.post("/signup")
 def signup(email: str = Form(...), password: str = Form(...), db: Session = Depends(get_db)):
-    existing = db.query(models.User).filter(models.User.email == email).first()
-    if existing:
-        return HTMLResponse("User already exists")
-
     user = models.User(
         email=email,
-        password=hash_password(password)
+        password=hash_password(password),
+        reminder_days=3,
+        email_frequency="daily"
     )
     db.add(user)
     db.commit()
-
     return RedirectResponse("/", status_code=303)
 
 # ---------------- DASHBOARD ----------------
 @app.get("/dashboard", response_class=HTMLResponse)
 def dashboard(request: Request, db: Session = Depends(get_db)):
     email = request.cookies.get("user_email")
-
     if not email:
         return RedirectResponse("/")
 
-    tasks = db.query(models.Task).filter(models.Task.user_email == email).all()
+    msg = request.query_params.get("msg")
+    alert = "<div class='success'>Task added</div>" if msg == "added" else ""
 
-    now = datetime.now()
+    tasks = db.query(models.Task).filter(models.Task.user_email == email).all()
     tasks = sorted(tasks, key=lambda t: t.due_date)
 
-    total = len(tasks)
-    overdue = len([t for t in tasks if t.due_date < now])
-    upcoming = total - overdue
-
-    rows = ""
-    for t in tasks:
-        badge = "overdue" if t.due_date < now else "upcoming"
-        rows += f"""
-        <tr>
-            <td>{t.task_name}</td>
-            <td>{t.due_date.strftime("%d %b %Y")}</td>
-            <td><span class="badge {badge}">{badge}</span></td>
-        </tr>
-        """
+    if not tasks:
+        rows = "<tr><td colspan='3'>No tasks yet</td></tr>"
+    else:
+        rows = ""
+        for t in tasks:
+            rows += f"<tr><td>{t.task_name}</td><td>{t.due_date.date()}</td></tr>"
 
     return render_page(f"""
-        <div class="stats">
-            <div class="stat"><h3>{total}</h3><p>Total</p></div>
-            <div class="stat"><h3>{overdue}</h3><p>Overdue</p></div>
-            <div class="stat"><h3>{upcoming}</h3><p>Upcoming</p></div>
-        </div>
+        {alert}
 
         <div class="card">
             <h3>Tasks</h3>
             <a href="/add-task"><button>Add Task</button></a>
             <table>
-                <tr><th>Task</th><th>Due</th><th>Status</th></tr>
+                <tr><th>Task</th><th>Due</th></tr>
                 {rows}
             </table>
         </div>
@@ -181,7 +237,6 @@ def add_task_page():
         </div>
     """)
 
-
 @app.post("/add-task")
 def add_task(request: Request, task_name: str = Form(...), due_date: str = Form(...), db: Session = Depends(get_db)):
     email = request.cookies.get("user_email")
@@ -195,39 +250,39 @@ def add_task(request: Request, task_name: str = Form(...), due_date: str = Form(
     db.add(task)
     db.commit()
 
-    return RedirectResponse("/dashboard", status_code=303)
+    return RedirectResponse("/dashboard?msg=added", status_code=303)
 
-# ---------------- UPLOAD ----------------
-@app.get("/upload-page", response_class=HTMLResponse)
-def upload_page():
-    return render_page("""
+# ---------------- SETTINGS ----------------
+@app.get("/settings", response_class=HTMLResponse)
+def settings_page(request: Request, db: Session = Depends(get_db)):
+    email = request.cookies.get("user_email")
+    user = db.query(models.User).filter(models.User.email == email).first()
+
+    return render_page(f"""
         <div class="card">
-            <h2>Upload CSV</h2>
-            <form action="/upload" method="post" enctype="multipart/form-data">
-                <input type="file" name="file">
-                <button>Upload</button>
+            <h2>Settings</h2>
+            <form method="post" action="/settings">
+                <label>Reminder Days</label>
+                <input name="days" value="{user.reminder_days}">
+
+                <label>Email Frequency</label>
+                <select name="freq">
+                    <option {"selected" if user.email_frequency=="daily" else ""}>daily</option>
+                    <option {"selected" if user.email_frequency=="weekly" else ""}>weekly</option>
+                </select>
+
+                <button>Save</button>
             </form>
         </div>
     """)
 
-
-@app.post("/upload")
-def upload(file: UploadFile = File(...), request: Request = None, db: Session = Depends(get_db)):
+@app.post("/settings")
+def save_settings(request: Request, days: int = Form(...), freq: str = Form(...), db: Session = Depends(get_db)):
     email = request.cookies.get("user_email")
+    user = db.query(models.User).filter(models.User.email == email).first()
 
-    df = pd.read_csv(file.file)
-
-    for _, row in df.iterrows():
-        try:
-            task = models.Task(
-                task_name=str(row[0]),
-                due_date=pd.to_datetime(row[1]),
-                user_email=email
-            )
-            db.add(task)
-        except:
-            continue
-
+    user.reminder_days = days
+    user.email_frequency = freq
     db.commit()
 
     return RedirectResponse("/dashboard", status_code=303)
