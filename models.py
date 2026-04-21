@@ -8,7 +8,8 @@ class User(Base):
     id = Column(Integer, primary_key=True, index=True)
     email = Column(String, unique=True)
     password = Column(String)
-
+    reminder_days = Column(Integer, default=3)
+    email_frequency = Column(String, default="daily")
     alert_days = Column(Integer, default=3)
     notification_interval = Column(Integer, default=24)  # hours
     last_sent = Column(DateTime, default=None)  # NEW
